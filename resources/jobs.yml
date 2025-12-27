@@ -1,0 +1,425 @@
+# Job Definitions for Databricks Asset Bundle
+# Contains all pipeline job configurations with placeholders
+
+resources:
+  jobs:
+    # ==========================================================================
+    # BRONZE LAYER JOBS
+    # ==========================================================================
+    
+    bronze_customer_ingestion:
+      name: "[${bundle.target}] Bronze - Customer Ingestion"
+      description: "Ingest customer data from source system to bronze layer"
+      
+      # Schedule - adjust per environment in targets
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"  # Daily at 6 AM
+        timezone_id: "UTC"
+        pause_status: PAUSED  # Enable in production
+      
+      # Job cluster configuration (can be overridden per target)
+      job_clusters:
+        - job_cluster_key: pipeline_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "{{JOB_CLUSTER_NODE_TYPE}}"
+            num_workers: "{{JOB_CLUSTER_NUM_WORKERS}}"
+            spark_conf:
+              spark.databricks.delta.optimizeWrite.enabled: "true"
+            custom_tags:
+              Environment: "${bundle.target}"
+              Project: datalib
+              Layer: bronze
+              Pipeline: customer_ingestion
+      
+      # Task definition
+      tasks:
+        - task_key: run_pipeline
+          description: "Execute customer ingestion pipeline"
+          
+          # Use job cluster OR existing interactive cluster
+          # Uncomment one of the following:
+          job_cluster_key: pipeline_cluster
+          # existing_cluster_id: "{{INTERACTIVE_CLUSTER_ID}}"
+          
+          # Install the wheel library
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+            # Alternative: reference artifact
+            # - whl: ../../dist/*.whl
+          
+          # Notebook task
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "bronze/customer_ingestion.yaml"
+              environment: "${bundle.target}"
+              dry_run: "false"
+            source: WORKSPACE
+          
+          # Timeout and retries
+          timeout_seconds: 3600
+          max_retries: 2
+          min_retry_interval_millis: 60000
+      
+      # Tags for organization
+      tags:
+        layer: bronze
+        domain: customer
+        schedule: daily
+      
+      # Notifications (override in targets)
+      email_notifications:
+        on_failure:
+          - "${var.notification_email}"
+    
+    # --------------------------------------------------------------------------
+    
+    bronze_orders_ingestion:
+      name: "[${bundle.target}] Bronze - Orders Ingestion"
+      description: "Ingest orders data from landing zone to bronze layer"
+      
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"  # Hourly
+        timezone_id: "UTC"
+        pause_status: PAUSED
+      
+      job_clusters:
+        - job_cluster_key: pipeline_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "{{JOB_CLUSTER_NODE_TYPE}}"
+            num_workers: "{{JOB_CLUSTER_NUM_WORKERS}}"
+            custom_tags:
+              Environment: "${bundle.target}"
+              Layer: bronze
+      
+      tasks:
+        - task_key: run_pipeline
+          job_cluster_key: pipeline_cluster
+          
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "bronze/orders_ingestion.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          
+          timeout_seconds: 1800
+          max_retries: 3
+      
+      tags:
+        layer: bronze
+        domain: sales
+        schedule: hourly
+    
+    # ==========================================================================
+    # SILVER LAYER JOBS
+    # ==========================================================================
+    
+    silver_customer_cleansed:
+      name: "[${bundle.target}] Silver - Customer Cleansing"
+      description: "Cleanse and standardize customer data"
+      
+      schedule:
+        quartz_cron_expression: "0 30 6 * * ?"  # Daily at 6:30 AM (after bronze)
+        timezone_id: "UTC"
+        pause_status: PAUSED
+      
+      job_clusters:
+        - job_cluster_key: pipeline_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "{{JOB_CLUSTER_NODE_TYPE}}"
+            num_workers: "{{JOB_CLUSTER_NUM_WORKERS}}"
+            custom_tags:
+              Environment: "${bundle.target}"
+              Layer: silver
+      
+      tasks:
+        - task_key: run_pipeline
+          job_cluster_key: pipeline_cluster
+          
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "silver/customer_cleansed.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          
+          timeout_seconds: 3600
+          max_retries: 2
+          
+          # Depends on bronze job (for orchestration)
+          depends_on: []
+      
+      tags:
+        layer: silver
+        domain: customer
+        schedule: daily
+    
+    # --------------------------------------------------------------------------
+    
+    silver_orders_cleansed:
+      name: "[${bundle.target}] Silver - Orders Cleansing"
+      description: "Cleanse and enrich orders data"
+      
+      schedule:
+        quartz_cron_expression: "0 15 * * * ?"  # Hourly at :15 (after bronze)
+        timezone_id: "UTC"
+        pause_status: PAUSED
+      
+      job_clusters:
+        - job_cluster_key: pipeline_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "{{JOB_CLUSTER_NODE_TYPE}}"
+            num_workers: "{{JOB_CLUSTER_NUM_WORKERS}}"
+            custom_tags:
+              Environment: "${bundle.target}"
+              Layer: silver
+      
+      tasks:
+        - task_key: run_pipeline
+          job_cluster_key: pipeline_cluster
+          
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "silver/orders_cleansed.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          
+          timeout_seconds: 1800
+          max_retries: 2
+      
+      tags:
+        layer: silver
+        domain: sales
+        schedule: hourly
+    
+    # ==========================================================================
+    # GOLD LAYER JOBS
+    # ==========================================================================
+    
+    gold_customer_360:
+      name: "[${bundle.target}] Gold - Customer 360"
+      description: "Create unified customer 360 view"
+      
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"  # Daily at 7 AM (after silver)
+        timezone_id: "UTC"
+        pause_status: PAUSED
+      
+      job_clusters:
+        - job_cluster_key: pipeline_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "{{JOB_CLUSTER_NODE_TYPE}}"
+            num_workers: "{{JOB_CLUSTER_NUM_WORKERS}}"
+            spark_conf:
+              spark.databricks.delta.optimizeWrite.enabled: "true"
+              spark.sql.shuffle.partitions: "200"
+            custom_tags:
+              Environment: "${bundle.target}"
+              Layer: gold
+      
+      tasks:
+        - task_key: run_pipeline
+          job_cluster_key: pipeline_cluster
+          
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "gold/customer_360.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          
+          timeout_seconds: 7200
+          max_retries: 1
+      
+      tags:
+        layer: gold
+        domain: customer
+        schedule: daily
+        use_case: analytics
+    
+    # --------------------------------------------------------------------------
+    
+    gold_daily_sales_summary:
+      name: "[${bundle.target}] Gold - Daily Sales Summary"
+      description: "Create aggregated daily sales metrics"
+      
+      schedule:
+        quartz_cron_expression: "0 30 7 * * ?"  # Daily at 7:30 AM
+        timezone_id: "UTC"
+        pause_status: PAUSED
+      
+      job_clusters:
+        - job_cluster_key: pipeline_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "{{JOB_CLUSTER_NODE_TYPE}}"
+            num_workers: "{{JOB_CLUSTER_NUM_WORKERS}}"
+            custom_tags:
+              Environment: "${bundle.target}"
+              Layer: gold
+      
+      tasks:
+        - task_key: run_pipeline
+          job_cluster_key: pipeline_cluster
+          
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "gold/daily_sales_summary.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          
+          timeout_seconds: 3600
+          max_retries: 1
+      
+      tags:
+        layer: gold
+        domain: sales
+        schedule: daily
+        use_case: reporting
+    
+    # ==========================================================================
+    # ORCHESTRATION JOBS (Multi-task workflows)
+    # ==========================================================================
+    
+    daily_full_pipeline:
+      name: "[${bundle.target}] Daily Full Pipeline"
+      description: "Complete daily data pipeline - Bronze -> Silver -> Gold"
+      
+      schedule:
+        quartz_cron_expression: "0 0 5 * * ?"  # Daily at 5 AM
+        timezone_id: "UTC"
+        pause_status: PAUSED
+      
+      job_clusters:
+        - job_cluster_key: shared_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "{{JOB_CLUSTER_NODE_TYPE}}"
+            num_workers: "{{JOB_CLUSTER_NUM_WORKERS}}"
+            spark_conf:
+              spark.databricks.delta.optimizeWrite.enabled: "true"
+            custom_tags:
+              Environment: "${bundle.target}"
+              Pipeline: full_daily
+      
+      tasks:
+        # Bronze layer tasks
+        - task_key: bronze_customers
+          job_cluster_key: shared_cluster
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "bronze/customer_ingestion.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          timeout_seconds: 3600
+        
+        - task_key: bronze_orders
+          job_cluster_key: shared_cluster
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "bronze/orders_ingestion.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          timeout_seconds: 1800
+        
+        # Silver layer tasks (depend on bronze)
+        - task_key: silver_customers
+          job_cluster_key: shared_cluster
+          depends_on:
+            - task_key: bronze_customers
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "silver/customer_cleansed.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          timeout_seconds: 3600
+        
+        - task_key: silver_orders
+          job_cluster_key: shared_cluster
+          depends_on:
+            - task_key: bronze_orders
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "silver/orders_cleansed.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          timeout_seconds: 1800
+        
+        # Gold layer tasks (depend on silver)
+        - task_key: gold_customer_360
+          job_cluster_key: shared_cluster
+          depends_on:
+            - task_key: silver_customers
+            - task_key: silver_orders
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "gold/customer_360.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          timeout_seconds: 7200
+        
+        - task_key: gold_sales_summary
+          job_cluster_key: shared_cluster
+          depends_on:
+            - task_key: silver_orders
+          libraries:
+            - whl: "{{WHEEL_PATH}}"
+          notebook_task:
+            notebook_path: ../notebooks/runner.py
+            base_parameters:
+              config_path: "gold/daily_sales_summary.yaml"
+              environment: "${bundle.target}"
+            source: WORKSPACE
+          timeout_seconds: 3600
+      
+      max_concurrent_runs: 1
+      
+      tags:
+        type: orchestration
+        schedule: daily
+      
+      email_notifications:
+        on_start:
+          - "${var.notification_email}"
+        on_success:
+          - "${var.notification_email}"
+        on_failure:
+          - "${var.notification_email}"

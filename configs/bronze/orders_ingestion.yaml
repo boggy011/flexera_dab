@@ -1,0 +1,84 @@
+# Orders Ingestion Pipeline - Bronze Layer
+# Ingests raw orders data from source files
+
+pipeline:
+  name: orders_ingestion
+  layer: bronze
+  description: "Ingest raw orders data from landing zone parquet files"
+  version: "1.0.0"
+  owner: "data-engineering-team"
+  tags:
+    domain: "sales"
+    criticality: "high"
+    schedule: "hourly"
+
+source:
+  type: parquet
+  path: "${LANDING_ZONE_PATH}/orders/"
+  options:
+    mergeSchema: "true"
+    recursiveFileLookup: "true"
+
+target:
+  catalog: "${CATALOG_NAME:main}"
+  schema: "bronze"
+  table: "orders_raw"
+  mode: "append"
+  format: "delta"
+  partition_by:
+    - "order_date"
+  options:
+    mergeSchema: "true"
+
+processing:
+  mode: "incremental"
+  watermark_column: "order_timestamp"
+  watermark_delay: "1 hour"
+
+transformations:
+  - type: add_timestamp
+    params:
+      column_name: "ingestion_timestamp"
+  
+  - type: cast_columns
+    params:
+      column_types:
+        order_id: "string"
+        customer_id: "string"
+        order_amount: "decimal(18,2)"
+        order_quantity: "integer"
+  
+  - type: add_derived_column
+    params:
+      column_name: "order_date"
+      expression: "to_date(order_timestamp)"
+  
+  - type: add_derived_column
+    params:
+      column_name: "source_file"
+      expression: "input_file_name()"
+
+quality:
+  enabled: true
+  fail_on_error: false
+  checks:
+    - type: not_null
+      name: "order_id_not_null"
+      column: "order_id"
+    
+    - type: not_null
+      name: "customer_id_not_null"
+      column: "customer_id"
+    
+    - type: range
+      name: "order_amount_positive"
+      column: "order_amount"
+      min: 0
+    
+    - type: row_count
+      name: "minimum_records"
+      min: 1
+
+parameters:
+  source_system: "ERP"
+  data_classification: "internal"

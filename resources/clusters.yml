@@ -1,0 +1,100 @@
+# Cluster Configurations for Databricks Asset Bundle
+# Defines reusable cluster templates for different use cases
+
+# Note: These are templates that can be referenced in job definitions
+# The actual cluster IDs for interactive clusters should be configured
+# via environment variables or the placeholder replacement script
+
+# =============================================================================
+# CLUSTER TEMPLATES
+# =============================================================================
+
+# Template configurations (these are documentation/reference - not deployed)
+# Use these as reference when configuring job clusters
+
+# Small cluster - Development and testing
+cluster_templates:
+  small:
+    spark_version: "14.3.x-scala2.12"
+    node_type_id: "Standard_DS3_v2"
+    num_workers: 1
+    spark_conf:
+      spark.databricks.cluster.profile: singleNode
+      spark.master: "local[*]"
+    custom_tags:
+      ClusterType: small
+      Purpose: development
+  
+  # Medium cluster - Standard workloads
+  medium:
+    spark_version: "14.3.x-scala2.12"
+    node_type_id: "Standard_DS4_v2"
+    num_workers: 2
+    autoscale:
+      min_workers: 1
+      max_workers: 4
+    spark_conf:
+      spark.databricks.delta.optimizeWrite.enabled: "true"
+      spark.databricks.delta.autoCompact.enabled: "true"
+    custom_tags:
+      ClusterType: medium
+      Purpose: standard
+  
+  # Large cluster - Heavy workloads
+  large:
+    spark_version: "14.3.x-scala2.12"
+    node_type_id: "Standard_DS5_v2"
+    num_workers: 4
+    autoscale:
+      min_workers: 2
+      max_workers: 8
+    spark_conf:
+      spark.databricks.delta.optimizeWrite.enabled: "true"
+      spark.databricks.delta.autoCompact.enabled: "true"
+      spark.sql.shuffle.partitions: "200"
+    custom_tags:
+      ClusterType: large
+      Purpose: heavy_workload
+
+# =============================================================================
+# ENVIRONMENT-SPECIFIC CLUSTER MAPPINGS
+# =============================================================================
+
+# These mappings define which cluster template to use per environment
+# Replace placeholders with actual values during deployment
+
+environment_cluster_mapping:
+  dev:
+    default_template: small
+    interactive_cluster_id: "{{DEV_INTERACTIVE_CLUSTER_ID}}"
+    job_cluster_node_type: "Standard_DS3_v2"
+    job_cluster_num_workers: 1
+  
+  qa:
+    default_template: medium
+    interactive_cluster_id: "{{QA_INTERACTIVE_CLUSTER_ID}}"
+    job_cluster_node_type: "Standard_DS4_v2"
+    job_cluster_num_workers: 2
+  
+  prd:
+    default_template: large
+    interactive_cluster_id: "{{PRD_INTERACTIVE_CLUSTER_ID}}"
+    job_cluster_node_type: "Standard_DS5_v2"
+    job_cluster_num_workers: 4
+
+# =============================================================================
+# PLACEHOLDER DOCUMENTATION
+# =============================================================================
+
+# The following placeholders should be replaced during deployment:
+#
+# {{JOB_CLUSTER_NODE_TYPE}}     - Node type for job clusters
+# {{JOB_CLUSTER_NUM_WORKERS}}   - Number of workers for job clusters
+# {{INTERACTIVE_CLUSTER_ID}}    - ID of interactive cluster (if using)
+# {{WHEEL_PATH}}                - Path to the wheel file in workspace
+# {{DEV_INTERACTIVE_CLUSTER_ID}} - Dev environment interactive cluster
+# {{QA_INTERACTIVE_CLUSTER_ID}}  - QA environment interactive cluster
+# {{PRD_INTERACTIVE_CLUSTER_ID}} - Prod environment interactive cluster
+#
+# Use the scripts/replace_placeholders.sh script to replace these values
+# based on environment configuration.

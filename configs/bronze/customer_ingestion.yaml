@@ -1,0 +1,78 @@
+# Customer Ingestion Pipeline - Bronze Layer
+# Ingests raw customer data from source system
+
+pipeline:
+  name: customer_ingestion
+  layer: bronze
+  description: "Ingest raw customer data from source JDBC system"
+  version: "1.0.0"
+  owner: "data-engineering-team"
+  tags:
+    domain: "customer"
+    criticality: "high"
+    schedule: "daily"
+
+source:
+  type: jdbc
+  connection_string: "${JDBC_CONNECTION_STRING}"
+  table: "customers"
+  options:
+    driver: "com.mysql.cj.jdbc.Driver"
+    fetchsize: "10000"
+    numPartitions: "8"
+    partitionColumn: "customer_id"
+    lowerBound: "1"
+    upperBound: "10000000"
+
+target:
+  catalog: "${CATALOG_NAME:main}"
+  schema: "bronze"
+  table: "customers_raw"
+  mode: "overwrite"
+  format: "delta"
+  partition_by:
+    - "ingestion_date"
+  options:
+    overwriteSchema: "true"
+    optimize: true
+    z_order_by:
+      - "customer_id"
+
+processing:
+  mode: "full"
+  batch_size: 100000
+
+transformations:
+  - type: add_timestamp
+    params:
+      column_name: "ingestion_timestamp"
+  
+  - type: add_derived_column
+    params:
+      column_name: "ingestion_date"
+      expression: "current_date()"
+  
+  - type: add_derived_column
+    params:
+      column_name: "source_system"
+      expression: "'CRM_MYSQL'"
+
+quality:
+  enabled: true
+  fail_on_error: false
+  checks:
+    - type: not_null
+      name: "customer_id_not_null"
+      column: "customer_id"
+    
+    - type: unique
+      name: "customer_id_unique"
+      column: "customer_id"
+    
+    - type: row_count
+      name: "minimum_records"
+      min: 1
+
+parameters:
+  source_system: "CRM"
+  data_classification: "confidential"

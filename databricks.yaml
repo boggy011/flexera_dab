@@ -1,0 +1,129 @@
+# Databricks Asset Bundle Configuration
+# This is the main configuration file for deploying across environments
+
+bundle:
+  name: datalib-pipelines
+
+# Artifact definitions - wheel package
+artifacts:
+  datalib_wheel:
+    type: whl
+    path: ./dist
+    build: |
+      pip wheel . --no-deps --wheel-dir ./dist
+    files:
+      - source: ./dist/*.whl
+
+# Variables with defaults
+variables:
+  catalog_name:
+    description: "Unity Catalog name for the environment"
+    default: "main"
+  
+  warehouse_id:
+    description: "SQL Warehouse ID for DLT"
+    default: ""
+  
+  wheel_version:
+    description: "Version of the wheel package"
+    default: "1.0.0"
+  
+  notification_email:
+    description: "Email for job notifications"
+    default: "data-engineering@company.com"
+
+# Workspace settings
+workspace:
+  root_path: /Workspace/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+# Include additional resource files
+include:
+  - resources/*.yml
+
+# Environment-specific targets
+targets:
+  # Sandbox/Development environment
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: ${DATABRICKS_HOST_DEV}
+    
+    variables:
+      catalog_name: dev_catalog
+    
+    # Use current user's cluster for development
+    resources:
+      jobs:
+        bronze_customer_ingestion:
+          job_clusters:
+            - job_cluster_key: pipeline_cluster
+              new_cluster:
+                spark_version: "14.3.x-scala2.12"
+                node_type_id: "Standard_DS3_v2"
+                num_workers: 1
+                spark_conf:
+                  spark.databricks.cluster.profile: singleNode
+                custom_tags:
+                  Environment: dev
+                  Project: datalib
+
+  # Stage/QA environment
+  qa:
+    mode: development
+    workspace:
+      host: ${DATABRICKS_HOST_QA}
+    
+    variables:
+      catalog_name: qa_catalog
+    
+    resources:
+      jobs:
+        bronze_customer_ingestion:
+          job_clusters:
+            - job_cluster_key: pipeline_cluster
+              new_cluster:
+                spark_version: "14.3.x-scala2.12"
+                node_type_id: "Standard_DS4_v2"
+                num_workers: 2
+                spark_conf:
+                  spark.databricks.delta.optimizeWrite.enabled: "true"
+                custom_tags:
+                  Environment: qa
+                  Project: datalib
+
+  # Production environment
+  prd:
+    mode: production
+    workspace:
+      host: ${DATABRICKS_HOST_PRD}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    
+    variables:
+      catalog_name: prd_catalog
+    
+    # Production requires explicit permissions
+    run_as:
+      service_principal_name: ${DATABRICKS_SP_NAME}
+    
+    resources:
+      jobs:
+        bronze_customer_ingestion:
+          # Use the same cluster config as QA (wheel promoted from QA)
+          job_clusters:
+            - job_cluster_key: pipeline_cluster
+              new_cluster:
+                spark_version: "14.3.x-scala2.12"
+                node_type_id: "Standard_DS4_v2"
+                num_workers: 4
+                spark_conf:
+                  spark.databricks.delta.optimizeWrite.enabled: "true"
+                  spark.databricks.delta.autoCompact.enabled: "true"
+                custom_tags:
+                  Environment: prd
+                  Project: datalib
+          
+          # Production email notifications
+          email_notifications:
+            on_failure:
+              - ${var.notification_email}

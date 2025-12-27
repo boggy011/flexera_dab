@@ -1,0 +1,72 @@
+# Daily Sales Summary Pipeline - Gold Layer
+# Creates aggregated sales metrics by day
+
+pipeline:
+  name: daily_sales_summary
+  layer: gold
+  description: "Create daily aggregated sales metrics for reporting"
+  version: "1.0.0"
+  owner: "data-analytics-team"
+  tags:
+    domain: "sales"
+    criticality: "high"
+    schedule: "daily"
+    use_case: "reporting"
+
+source:
+  type: table
+  catalog: "${CATALOG_NAME:main}"
+  schema: "silver"
+  table: "orders_cleansed"
+
+target:
+  catalog: "${CATALOG_NAME:main}"
+  schema: "gold"
+  table: "daily_sales_summary"
+  mode: "merge"
+  format: "delta"
+  merge_keys:
+    - "sales_date"
+  partition_by:
+    - "sales_year"
+    - "sales_month"
+  options:
+    optimize: true
+
+processing:
+  mode: "incremental"
+  watermark_column: "processed_timestamp"
+
+# Note: Aggregations are done via SQL source or custom transformation
+# This config shows how to read pre-aggregated data
+
+transformations:
+  - type: add_timestamp
+    params:
+      column_name: "aggregation_timestamp"
+
+quality:
+  enabled: true
+  fail_on_error: false
+  checks:
+    - type: not_null
+      name: "sales_date_not_null"
+      column: "sales_date"
+    
+    - type: unique
+      name: "sales_date_unique"
+      column: "sales_date"
+    
+    - type: range
+      name: "total_revenue_non_negative"
+      column: "total_revenue"
+      min: 0
+    
+    - type: range
+      name: "order_count_positive"
+      column: "order_count"
+      min: 0
+
+parameters:
+  aggregation_level: "daily"
+  data_classification: "internal"

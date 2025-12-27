@@ -1,0 +1,168 @@
+# Customer 360 Pipeline - Gold Layer
+# Creates unified customer view with aggregated metrics
+
+pipeline:
+  name: customer_360
+  layer: gold
+  description: "Create unified customer 360 view with lifetime metrics"
+  version: "1.0.0"
+  owner: "data-analytics-team"
+  tags:
+    domain: "customer"
+    criticality: "high"
+    schedule: "daily"
+    use_case: "analytics"
+
+# Multiple sources - will be joined
+sources:
+  - type: table
+    catalog: "${CATALOG_NAME:main}"
+    schema: "silver"
+    table: "customers_cleansed"
+  
+  - type: sql
+    query: |
+      SELECT 
+        customer_id,
+        COUNT(*) as total_orders,
+        SUM(total_amount) as lifetime_value,
+        AVG(total_amount) as avg_order_value,
+        MIN(order_timestamp) as first_order_date,
+        MAX(order_timestamp) as last_order_date,
+        COUNT(DISTINCT order_year) as active_years
+      FROM ${CATALOG_NAME:main}.silver.orders_cleansed
+      GROUP BY customer_id
+
+target:
+  catalog: "${CATALOG_NAME:main}"
+  schema: "gold"
+  table: "customer_360"
+  mode: "overwrite"
+  format: "delta"
+  partition_by:
+    - "customer_segment"
+  options:
+    optimize: true
+    z_order_by:
+      - "customer_id"
+      - "lifetime_value"
+
+processing:
+  mode: "full"
+
+transformations:
+  - type: fill_nulls
+    params:
+      fill_values:
+        total_orders: 0
+        lifetime_value: 0.0
+        avg_order_value: 0.0
+  
+  - type: add_derived_column
+    params:
+      column_name: "customer_segment"
+      expression: |
+        CASE 
+          WHEN lifetime_value >= 10000 THEN 'platinum'
+          WHEN lifetime_value >= 5000 THEN 'gold'
+          WHEN lifetime_value >= 1000 THEN 'silver'
+          WHEN lifetime_value > 0 THEN 'bronze'
+          ELSE 'prospect'
+        END
+  
+  - type: add_derived_column
+    params:
+      column_name: "days_since_first_order"
+      expression: "datediff(current_date(), first_order_date)"
+  
+  - type: add_derived_column
+    params:
+      column_name: "days_since_last_order"
+      expression: "datediff(current_date(), last_order_date)"
+  
+  - type: add_derived_column
+    params:
+      column_name: "is_active_customer"
+      expression: "days_since_last_order <= 90"
+  
+  - type: add_derived_column
+    params:
+      column_name: "churn_risk_score"
+      expression: |
+        CASE 
+          WHEN days_since_last_order > 365 THEN 1.0
+          WHEN days_since_last_order > 180 THEN 0.75
+          WHEN days_since_last_order > 90 THEN 0.5
+          WHEN days_since_last_order > 30 THEN 0.25
+          ELSE 0.1
+        END
+  
+  - type: add_timestamp
+    params:
+      column_name: "snapshot_timestamp"
+  
+  - type: select_columns
+    params:
+      columns:
+        - "customer_id"
+        - "full_name"
+        - "email"
+        - "email_domain"
+        - "country_code"
+        - "customer_segment"
+        - "total_orders"
+        - "lifetime_value"
+        - "avg_order_value"
+        - "first_order_date"
+        - "last_order_date"
+        - "days_since_first_order"
+        - "days_since_last_order"
+        - "active_years"
+        - "is_active_customer"
+        - "churn_risk_score"
+        - "snapshot_timestamp"
+
+quality:
+  enabled: true
+  fail_on_error: true
+  checks:
+    - type: not_null
+      name: "customer_id_not_null"
+      column: "customer_id"
+    
+    - type: unique
+      name: "customer_id_unique"
+      column: "customer_id"
+    
+    - type: range
+      name: "lifetime_value_non_negative"
+      column: "lifetime_value"
+      min: 0
+    
+    - type: values
+      name: "customer_segment_valid"
+      column: "customer_segment"
+      allowed:
+        - "platinum"
+        - "gold"
+        - "silver"
+        - "bronze"
+        - "prospect"
+    
+    - type: range
+      name: "churn_risk_valid"
+      column: "churn_risk_score"
+      min: 0
+      max: 1
+    
+    - type: row_count
+      name: "minimum_customers"
+      min: 1
+
+parameters:
+  join:
+    type: "left"
+    keys:
+      - "customer_id"
+  data_classification: "confidential"
+  refresh_frequency: "daily"

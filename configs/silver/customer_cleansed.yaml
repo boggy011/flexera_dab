@@ -1,0 +1,130 @@
+# Customer Cleansing Pipeline - Silver Layer
+# Cleanses and standardizes customer data
+
+pipeline:
+  name: customer_cleansed
+  layer: silver
+  description: "Cleanse and standardize customer data from bronze layer"
+  version: "1.0.0"
+  owner: "data-engineering-team"
+  tags:
+    domain: "customer"
+    criticality: "high"
+    schedule: "daily"
+
+source:
+  type: table
+  catalog: "${CATALOG_NAME:main}"
+  schema: "bronze"
+  table: "customers_raw"
+
+target:
+  catalog: "${CATALOG_NAME:main}"
+  schema: "silver"
+  table: "customers_cleansed"
+  mode: "merge"
+  format: "delta"
+  merge_keys:
+    - "customer_id"
+  partition_by:
+    - "country_code"
+  options:
+    optimize: true
+    z_order_by:
+      - "customer_id"
+      - "email"
+
+processing:
+  mode: "incremental"
+  watermark_column: "ingestion_timestamp"
+
+transformations:
+  - type: filter_rows
+    params:
+      condition: "customer_id IS NOT NULL"
+  
+  - type: deduplicate
+    params:
+      subset:
+        - "customer_id"
+      keep: "last"
+      order_by:
+        - "ingestion_timestamp"
+      order_desc: true
+  
+  - type: standardize_strings
+    params:
+      columns:
+        - "email"
+        - "first_name"
+        - "last_name"
+      trim: true
+      lowercase: true
+  
+  - type: standardize_strings
+    params:
+      columns:
+        - "country_code"
+      trim: true
+      uppercase: true
+  
+  - type: cast_columns
+    params:
+      column_types:
+        customer_id: "string"
+        phone_number: "string"
+        postal_code: "string"
+  
+  - type: add_derived_column
+    params:
+      column_name: "full_name"
+      expression: "concat(initcap(first_name), ' ', initcap(last_name))"
+  
+  - type: add_derived_column
+    params:
+      column_name: "email_domain"
+      expression: "split(email, '@')[1]"
+  
+  - type: add_timestamp
+    params:
+      column_name: "processed_timestamp"
+  
+  - type: add_derived_column
+    params:
+      column_name: "row_hash"
+      expression: "sha2(concat_ws('|', customer_id, email, first_name, last_name, phone_number), 256)"
+
+quality:
+  enabled: true
+  fail_on_error: true
+  checks:
+    - type: not_null
+      name: "customer_id_not_null"
+      column: "customer_id"
+    
+    - type: unique
+      name: "customer_id_unique"
+      column: "customer_id"
+    
+    - type: regex
+      name: "email_format_valid"
+      column: "email"
+      pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+      threshold: 0.05  # Allow up to 5% failure
+    
+    - type: values
+      name: "country_code_valid"
+      column: "country_code"
+      allowed:
+        - "US"
+        - "CA"
+        - "UK"
+        - "DE"
+        - "FR"
+        - "AU"
+        - "JP"
+      threshold: 0.02
+
+parameters:
+  source_layer: "bronze"
+  data_classification: "confidential"
